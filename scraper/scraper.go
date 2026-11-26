@@ -17,6 +17,9 @@ const (
 	userAgent      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	searchPageSize = 10
 	maxSearchPages = 10
+
+	// DefaultCacheTTL is how long scraped pages stay valid in memory.
+	DefaultCacheTTL = 15 * time.Minute
 )
 
 // Scraper implements types.ProductSource using HTTP client and in-memory cache.
@@ -24,6 +27,7 @@ type Scraper struct {
 	client *http.Client
 	cache  map[string]cachedResult
 	mu     sync.Mutex
+	ttl    time.Duration
 }
 
 type cachedResult struct {
@@ -41,7 +45,16 @@ func New() *Scraper {
 			Timeout: 10 * time.Second,
 		},
 		cache: make(map[string]cachedResult),
+		ttl:   DefaultCacheTTL,
 	}
+}
+
+// WithCacheTTL returns a shallow copy of the scraper with a custom cache TTL.
+// A non-positive duration disables expiry (entries live until ClearCache).
+func (s *Scraper) WithCacheTTL(ttl time.Duration) *Scraper {
+	clone := *s
+	clone.ttl = ttl
+	return &clone
 }
 
 // GetLeaderboard fetches and parses the Product Hunt Featured leaderboard for the given period and date.
@@ -278,11 +291,16 @@ type categoryCache struct {
 	categories []types.CategoryLink
 }
 
-// getCached retrieves a cached value by key, returning (value, true) if found.
+// getCached retrieves a cached value by key, returning (value, true) if found
+// and not expired according to the scraper's TTL.
 func (s *Scraper) getCached(key string) (any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if cached, ok := s.cache[key]; ok {
+		if s.ttl > 0 && time.Since(cached.timestamp) > s.ttl {
+			delete(s.cache, key)
+			return nil, false
+		}
 		return cached.value, true
 	}
 	return nil, false
